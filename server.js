@@ -5,6 +5,9 @@ const PORT = Number(process.env.PORT || 3000);
 const KEY = process.env.DEEPSEEK_API_KEY || "";
 const API = process.env.DEEPSEEK_API || "https://api.deepseek.com/chat/completions";
 const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
+const ADMIN = process.env.SESSION_ADMIN_TOKEN || "";
+const sessions = new Map();
+
 const ALLOWED = (process.env.ALLOWED_ORIGINS ||
   "https://andriantahiry2024.github.io,http://localhost:5180,http://127.0.0.1:5180"
 ).split(",");
@@ -106,6 +109,52 @@ const server = http.createServer(async (req, res) => {
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
     return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY) });
   }
+  // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
+  if (req.method === "POST" && req.url === "/session") {
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 20_000) req.destroy();
+    });
+    req.on("end", () => {
+      try {
+        const p = JSON.parse(body || "{}");
+        const id = String(p.rustdesk?.id || "").replace(/\s/g, "");
+        const pwd = String(p.rustdesk?.pwd || "");
+        if (!/^\d{9,12}$/.test(id) || pwd.length < 4) {
+          return json(res, 400, { error: "identifiant ou mot de passe invalide" });
+        }
+        const sid = "S" + Date.now().toString(36).toUpperCase();
+        const record = {
+          sessionId: sid,
+          receivedAt: new Date().toISOString(),
+          client: {
+            email: String(p.email || "").slice(0, 120),
+            name: String(p.name || "").slice(0, 60),
+            ip: (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim(),
+            userAgent: String(req.headers["user-agent"] || "").slice(0, 200),
+            lang: String(req.headers["accept-language"] || "").slice(0, 80),
+          },
+          quote: p.quote || null,
+          rustdesk: { id, password: pwd },
+          status: "pending",
+        };
+        sessions.set(sid, record);
+        console.log("SESSION REÇUE", JSON.stringify({ sid, id, email: record.client.email }));
+        return json(res, 200, { ok: true, sessionId: sid, receivedAt: record.receivedAt });
+      } catch (e) {
+        return json(res, 400, { error: "payload invalide" });
+      }
+    });
+    return;
+  }
+
+  if (req.method === "GET" && req.url.startsWith("/sessions")) {
+    const token = req.headers["x-admin-token"] || new URL(req.url, "http://x").searchParams.get("token") || "";
+    if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
+    return json(res, 200, { count: sessions.size, sessions: [...sessions.values()].reverse() });
+  }
+
   if (req.method !== "POST" || req.url !== "/chat") return json(res, 404, { error: "not found" });
 
   const ip = (req.headers["x-forwarded-for"] || req.socket.remoteAddress || "").split(",")[0].trim();
