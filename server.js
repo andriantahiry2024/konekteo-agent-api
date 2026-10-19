@@ -278,7 +278,54 @@ function deterministicReply(history) {
   return { reply: QUESTIONS[category], stage: "ask", category };
 }
 
-async function askDeepSeek(history, ctxText = "") {
+/* Réponses déterministes pour les questions les plus fréquentes du client :
+   on ne laisse pas le modèle inventer un état ou un chiffre. */
+function reponsePMDirecte(message, ctx) {
+  const m = String(message || "").toLowerCase();
+  const c = ctx || {};
+  const etape = c.step || "1/4 — Compréhension";
+  const statut = c.status || null;
+  const taches = Array.isArray(c.tasks) ? c.tasks : [];
+  const faites = taches.filter((t) => t.status === "done");
+
+  if (/o[uù] en est|statut|avancement|[cç]a avance|o[uù] on est/.test(m)) {
+    let txt = `On est à l'étape ${etape}.`;
+    if (statut === "connected") txt += " La connexion à votre poste est active, je travaille dessus.";
+    else if (statut === "connecting") txt += " La connexion à votre poste est en cours.";
+    else if (statut === "closed") txt += " L'intervention est terminée.";
+    else if (statut === "failed" || statut === "error") txt += " La connexion a échoué, on peut réessayer ensemble.";
+    else if (statut === "simulated") txt += " C'est une session de démonstration, aucune connexion réelle.";
+    if (taches.length) {
+      const restantes = taches.filter((t) => t.status !== "done").map((t) => t.label);
+      txt += ` Tâches faites : ${faites.length}/${taches.length}.`;
+      if (restantes.length) txt += ` Reste : ${restantes.join(", ")}.`;
+    }
+    txt += " Voulez-vous que je vous explique une ligne en particulier ?";
+    return { reply: txt, stage: "ask", category: null };
+  }
+
+  if (/score|rapport|llms|json-?ld|alt|audit/.test(m) && c.report) {
+    const r = c.report;
+    const score = r.scores ? r.scores.total : null;
+    const faibles = (r.findings || []).filter((f) => !f.ok).map((f) => `${f.label} (${f.value})`);
+    let txt = score != null ? `Le score de votre site est ${score} sur 100.` : "Le rapport est disponible.";
+    if (faibles.length) txt += ` Points à corriger : ${faibles.slice(0, 3).join(", ")}.`;
+    else txt += " Aucun point bloquant détecté sur les critères mesurés.";
+    txt += " Je peux vous détailler chaque point en langage simple, ou lancer les corrections.";
+    return { reply: txt, stage: "ask", category: null };
+  }
+
+  if (/combien|prix|tarif|devis|co[uû]t/.test(m) && c.quote) {
+    return {
+      reply: `Le devis accepté est de ${c.quote.total} € (${c.quote.label}), tout compris, sans surprise. Vous voulez que je détaille les lignes ?`,
+      stage: "ask",
+      category: null,
+    };
+  }
+  return null;
+}
+
+async function askDeepSeek(history, ctxText = "", ctx = null) {
   const plans = [true, true, "text", "text"];
   for (let i = 0; i < plans.length; i++) {
     try {
@@ -606,7 +653,9 @@ ${s}
         .map((m) => ({ role: m.role, content: m.content.slice(0, 1200) }));
       if (!clean.length) return json(res, 400, { error: "historique vide" });
 
-      const out = await askDeepSeek(clean, ctxText);
+      const lastUser = [...clean].reverse().find((m) => m.role === "user");
+      const direct = lastUser ? reponsePMDirecte(lastUser.content, payload.context) : null;
+      const out = direct || (await askDeepSeek(clean, ctxText, payload.context));
       const stage = out.stage === "quote" ? "quote" : "ask";
       const category = PRICING[out.category] ? out.category : "fallback";
 
