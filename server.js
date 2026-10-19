@@ -887,9 +887,10 @@ ${s}
           reply: String(out.reply || "Voilà ce que je propose.").slice(0, 500),
           stage,
           quote: { key: category, label: p.label, delay: p.delay, lines, total },
+          addon: out.addon || null,
         });
       }
-      return json(res, 200, { reply: String(out.reply || "").slice(0, 500), stage });
+      return json(res, 200, { reply: String(out.reply || "").slice(0, 500), stage, addon: out.addon || null });
     } catch (e) {
       console.error("chat error:", e.message);
       return json(res, 502, { error: "l'agent est momentanément indisponible" });
