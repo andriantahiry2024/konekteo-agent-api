@@ -77,6 +77,12 @@ Règles absolues :
 
 Catégories possibles : "site" (site web), "auto" (automatisation), "perf" (lenteur, vitesse, accessibilité, visibilité IA), "support" (assistance PC à distance, antivirus, nettoyage), "fallback" (le reste).
 
+Cas particuliers :
+- Si le client parle de son ordinateur, d'un virus, d'un nettoyage, d'un PC lent : c'est "support". Ne demande JAMAIS l'adresse d'un site web dans ce cas.
+- Si le client est agacé, insultant ou pressé : arrête les questions, passe directement à stage "quote".
+- Ne repose jamais une question déjà posée dans l'historique.
+- Si le client se répète, c'est que tu n'as pas compris : reformule ta comprehension en une phrase, puis propose le devis.
+
 Réponds TOUJOURS en JSON avec exactement ces clés :
 {"reply": "ta réponse ou ta question", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "support" | "fallback" | null}
 
@@ -119,37 +125,85 @@ function parseLoose(text) {
   return null;
 }
 
-async function callModel(history) {
+async function callModel(history, jsonMode = true) {
+  const body = {
+    model: MODEL,
+    temperature: 0.2,
+    max_tokens: 800,
+    messages: [{ role: "system", content: SYSTEM }, ...history],
+  };
+  if (jsonMode) body.response_format = { type: "json_object" };
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` },
-    body: JSON.stringify({
-      model: MODEL,
-      temperature: 0.3,
-      max_tokens: 800,
-      response_format: { type: "json_object" },
-      messages: [{ role: "system", content: SYSTEM }, ...history],
-    }),
+    body: JSON.stringify(body),
   });
   if (!res.ok) throw new Error(`deepseek ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
   return data?.choices?.[0]?.message?.content || "";
 }
 
-async function askDeepSeek(history) {
-  // Le modèle renvoie parfois un JSON vide ou tronqué : on retente une fois.
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const text = await callModel(history);
-    const parsed = parseLoose(text);
-    if (parsed && typeof parsed.reply === "string" && parsed.reply.trim()) return parsed;
-    console.error("réponse modèle illisible (essai", attempt + 1, "):", String(text).slice(0, 200));
+/* Repli déterministe : le modèle renvoie parfois du vide. On ne laisse jamais
+   le client devant « je n'ai pas bien saisi » deux fois de suite. */
+const KEYWORDS = {
+  support: /pc|ordinateur|windows|virus|antivirus|nettoyage|dépannage|depannage|rame|écran bleu|ecran bleu|disque|ssd|mémoire|memoire|mise à jour|mise a jour/i,
+  site: /site|wordpress|vitrine|refonte|maquette|landing|page web/i,
+  auto: /automat|script|relance|facture|excel|crm|whatsapp|télégram|telegram|intégration|integration/i,
+  perf: /lent|vitesse|performance|chargement|rapide|audit/i,
+};
+
+function inferCategory(history) {
+  const text = history.filter((m) => m.role === "user").map((m) => m.content).join(" ");
+  for (const [cat, re] of Object.entries(KEYWORDS)) {
+    if (re.test(text)) return cat;
   }
-  // Dernier recours : une réponse utile, jamais un message qui casse la conversation.
-  return {
-    reply: "Je n'ai pas bien saisi. Reformulez en une phrase ce que vous voulez régler, et je continue.",
-    stage: "ask",
-    category: null,
-  };
+  return "fallback";
+}
+
+const QUESTIONS = {
+  support: "C'est sous Windows, et le problème a commencé quand ?",
+  site: "Qu'est-ce qui ne va pas aujourd'hui : le design, la vitesse, ou la mise à jour du contenu ?",
+  auto: "Quelle tâche vous prend le plus de temps chaque semaine ?",
+  perf: "C'est surtout gênant sur mobile ou sur ordinateur ?",
+  fallback: "Décrivez-moi le résultat attendu, en une phrase.",
+};
+
+function quoteFor(category) {
+  const p = PRICING[category] || PRICING.fallback;
+  const lines = p.lines;
+  const total = lines.reduce((s, l) => s + l.price, 0);
+  return { key: category, label: p.label, delay: p.delay, lines, total };
+}
+
+function deterministicReply(history) {
+  const category = inferCategory(history);
+  const users = history.filter((m) => m.role === "user");
+  const last = (users[users.length - 1]?.content || "").toLowerCase();
+  const wantsPrice = /prix|devis|combien|tarif|coût|cout|urgent|rapidement|aujourd'hui|maintenant/.test(last);
+  const annoyed = /con|nul|putain|merde|abruti|idiot|stupide/.test(last);
+  if (wantsPrice || annoyed || users.length >= 3) {
+    return { reply: "Très clair. Voilà ce que je propose.", stage: "quote", category, quote: quoteFor(category) };
+  }
+  return { reply: QUESTIONS[category], stage: "ask", category };
+}
+
+async function askDeepSeek(history) {
+  const plans = [true, true, false];
+  for (let i = 0; i < plans.length; i++) {
+    try {
+      const text = await callModel(history, plans[i]);
+      const parsed = parseLoose(text);
+      if (parsed && typeof parsed.reply === "string" && parsed.reply.trim()) return parsed;
+      console.error(
+        `réponse modèle illisible (essai ${i + 1}, json=${plans[i]}), longueur=${String(text || "").length}:`,
+        JSON.stringify(String(text || "").slice(0, 120))
+      );
+    } catch (e) {
+      console.error(`appel modèle en échec (essai ${i + 1}):`, e.message);
+    }
+  }
+  console.error("repli déterministe utilisé");
+  return deterministicReply(history);
 }
 
 const server = http.createServer(async (req, res) => {
