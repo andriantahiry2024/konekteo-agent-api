@@ -377,6 +377,38 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  if (req.method === "GET" && req.url === "/diag.ps1") {
+    const script = `$ErrorActionPreference = "SilentlyContinue"
+$o = Join-Path $env:USERPROFILE "konekteo-diagnostic.txt"
+"Konekteo - diagnostic du poste" | Out-File $o -Encoding UTF8
+"Date : $(Get-Date -Format 'dd/MM/yyyy HH:mm')" | Out-File $o -Append -Encoding UTF8
+"" | Out-File $o -Append -Encoding UTF8
+$os = Get-CimInstance Win32_OperatingSystem
+"Systeme         : $($os.Caption) $($os.Version)" | Out-File $o -Append -Encoding UTF8
+$ram = [math]::Round($os.TotalVisibleMemorySize / 1MB, 1)
+$ramL = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
+"Memoire         : $ram Go dont $ramL Go libres" | Out-File $o -Append -Encoding UTF8
+$d = Get-PSDrive C
+"Disque C:       : $([math]::Round($d.Free / 1GB, 1)) Go libres sur $([math]::Round(($d.Used + $d.Free) / 1GB, 1)) Go" | Out-File $o -Append -Encoding UTF8
+$mp = Get-MpComputerStatus
+"Antivirus       : actif=$($mp.AntivirusEnabled) temps reel=$($mp.RealTimeProtectionEnabled) signatures=$($mp.AntivirusSignatureVersion)" | Out-File $o -Append -Encoding UTF8
+$temp = (Get-ChildItem $env:TEMP -Recurse -Force | Measure-Object Length -Sum).Sum
+"Fichiers temp   : $([math]::Round($temp / 1MB, 1)) Mo" | Out-File $o -Append -Encoding UTF8
+$startup = (Get-CimInstance Win32_StartupCommand | Select-Object -First 8)
+"Demarrage auto  : $($startup.Count) elements" | Out-File $o -Append -Encoding UTF8
+"" | Out-File $o -Append -Encoding UTF8
+"Nettoyage des fichiers temporaires de plus de 2 jours..." | Out-File $o -Append -Encoding UTF8
+$avant = $temp
+Get-ChildItem $env:TEMP -Recurse -Force | Where-Object { $_.LastWriteTime -lt (Get-Date).AddDays(-2) } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+$apres = (Get-ChildItem $env:TEMP -Recurse -Force | Measure-Object Length -Sum).Sum
+$gain = [math]::Round(($avant - $apres) / 1MB, 1)
+"Espace libere    : $gain Mo" | Out-File $o -Append -Encoding UTF8
+Start-Process notepad.exe $o
+`;
+    res.writeHead(200, { "Content-Type": "text/plain; charset=utf-8", "Access-Control-Allow-Origin": "*" });
+    return res.end(script);
+  }
+
   const mReport = req.url.match(/^\/report\/([A-Z0-9]+)$/);
   if (req.method === "GET" && mReport) {
     const r = reports.get(mReport[1]);
