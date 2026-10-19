@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v11-securite" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v12-contexte" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -1019,10 +1019,36 @@ ${s}
         ctx.events = vrai.events || null;
         ctx.report = vrai.report || null;
         ctx.status = vrai.status;
-      } else if (!ctx.sessionId) {
-        // avant toute session, aucun paiement ne peut exister
+      } else {
+        // session inconnue ou pas encore créée : on ne croit aucun état déclaratif
         ctx.payment = null;
         ctx.mandate = null;
+        ctx.technician = null;
+        ctx.policy = null;
+        ctx.tasks = null;
+        ctx.events = null;
+        ctx.report = null;
+      }
+      // le devis déclaré est recalculé depuis ses lignes, jamais depuis son total
+      if (ctx.quote && typeof ctx.quote === "object") {
+        const lignes = Array.isArray(ctx.quote.lines)
+          ? ctx.quote.lines
+              .filter((l) => l && typeof l === "object")
+              .map((l) => ({ label: String(l.label || "").slice(0, 120), price: Math.max(0, Number(l.price) || 0) }))
+              .slice(0, 20)
+          : [];
+        ctx.quote = lignes.length
+          ? {
+              key: ["site", "auto", "perf", "support"].includes(ctx.quote.key) ? ctx.quote.key : "fallback",
+              label: String(ctx.quote.label || "").slice(0, 120),
+              delay: String(ctx.quote.delay || "").slice(0, 60),
+              lines: lignes,
+              total: lignes.reduce((sum, l) => sum + l.price, 0),
+            }
+          : null;
+      }
+      if (!ctx.technician) {
+        ctx.technician = { name: "Nomena ANDRIANTAHIRY", contact: "contact@konekteo.com", eta: "2 heures ouvrées" };
       }
       const ctxText = contexteSysteme(ctx);
       const history = Array.isArray(payload.history) ? payload.history.slice(-12) : [];
