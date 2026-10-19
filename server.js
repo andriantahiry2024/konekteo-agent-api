@@ -288,7 +288,7 @@ function reponsePMDirecte(message, ctx) {
   const taches = Array.isArray(c.tasks) ? c.tasks : [];
   const faites = taches.filter((t) => t.status === "done");
 
-  if (/o[uù] en est|statut|avancement|[cç]a avance|o[uù] on est/.test(m)) {
+  if (/o[uù]\s*(on\s*)?en est|statut|avancement|[cç]a avance|o[uù] on en est/.test(m)) {
     let txt = `On est à l'étape ${etape}.`;
     if (statut === "connected") txt += " La connexion à votre poste est active, je travaille dessus.";
     else if (statut === "connecting") txt += " La connexion à votre poste est en cours.";
