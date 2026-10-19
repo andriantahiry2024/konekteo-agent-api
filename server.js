@@ -292,9 +292,11 @@ const server = http.createServer(async (req, res) => {
         const p = JSON.parse(body || "{}");
         const id = String(p.rustdesk?.id || "").replace(/\s/g, "");
         const pwd = String(p.rustdesk?.pwd || "");
-        if (!/^\d{9,12}$/.test(id) || pwd.length < 4) {
+        const simulatedReq = p.simulated === true;
+        if (!simulatedReq && (!/^\d{9,12}$/.test(id) || pwd.length < 4)) {
           return json(res, 400, { error: "identifiant ou mot de passe invalide" });
         }
+        const simulated = p.simulated === true;
         const sid = "S" + Date.now().toString(36).toUpperCase();
         const record = {
           sessionId: sid,
@@ -308,15 +310,19 @@ const server = http.createServer(async (req, res) => {
           },
           quote: p.quote || null,
           site: record.site,
-          rustdesk: { id, password: pwd },
+          rustdesk: simulated ? { id: "SIMULATION", password: "" } : { id, password: pwd },
+          simulated,
           status: "pending",
         };
         record.site = String(p.site || "").slice(0, 300);
+        record.status = simulated ? "simulated" : "pending";
         record.events = [
           {
             at: record.receivedAt,
             type: "received",
-            label: "Dossier reçu : devis accepté, identifiants RustDesk transmis",
+            label: simulated
+              ? "Dossier reçu — mode simulation, aucune connexion ne sera ouverte"
+              : "Dossier reçu : devis accepté, identifiants RustDesk transmis",
             status: "done",
           },
         ];
