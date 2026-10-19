@@ -112,6 +112,11 @@ TON
 - Si le client est agacé : réponse directe, aucune question de relance.
 - Ne redemande jamais une information déjà donnée. Ne relance pas la conversation.
 
+DEVIS
+- Aux étapes 1/4 et 2/4, dès que le besoin est assez clair (un ou deux échanges), c'est TOI qui émets le devis : stage "quote" et category remplie. Les montants sont calculés par le serveur à partir de la catégorie — tu n'inventes aucun prix, tu choisis la catégorie.
+- Ne refuse jamais de chiffrer sous prétexte qu'« aucun devis n'existe » : c'est justement ton rôle de le créer.
+- Si un devis existe déjà dans le dossier, tu ne le réémets jamais : stage "ask".
+
 RÉPONSE
 Réponds toujours en JSON strict :
 {"reply": "ta réponse", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "support" | "fallback" | null}
@@ -479,6 +484,35 @@ const server = http.createServer(async (req, res) => {
           status: "pending",
         };
         record.site = String(p.site || "").slice(0, 300);
+        record.mandate = p.mandate
+          ? {
+              signed: true,
+              date: new Date().toISOString(),
+              scope: String(p.mandate.scope || "").slice(0, 300),
+              duration: String(p.mandate.duration || "90 minutes"),
+              retention: String(p.mandate.retention || "30 jours"),
+            }
+          : null;
+        record.payment = p.payment
+          ? {
+              paid: true,
+              amount: Number(p.payment.amount) || 0,
+              date: new Date().toISOString(),
+              demo: p.payment.demo !== false,
+              due: 0,
+              receipt: null,
+            }
+          : null;
+        record.technician = {
+          name: "Nomena ANDRIANTAHIRY",
+          contact: "contact@konekteo.com",
+          eta: "2 heures ouvrées",
+        };
+        record.policy = {
+          refund: "remboursement intégral si l'intervention n'a pas commencé, au prorata ensuite",
+          data: "captures conservées 30 jours puis supprimées sur demande",
+          terms: "CGV sur konekteo.com/cgv",
+        };
         record.status = simulated ? "simulated" : "pending";
         record.events = [
           {
@@ -644,6 +678,24 @@ ${s}
     return;
   }
 
+  const mStop = req.url.match(/^\/session\/([A-Z0-9]+)\/stop$/);
+  if (req.method === "POST" && mStop) {
+    const sess = sessions.get(mStop[1]);
+    if (!sess) return json(res, 404, { error: "session inconnue" });
+    sess.status = "cancelled";
+    sess.updatedAt = new Date().toISOString();
+    sess.events = sess.events || [];
+    sess.events.push({
+      at: sess.updatedAt,
+      type: "stop",
+      label: "Arrêt demandé par le client — accès coupé",
+      status: "done",
+    });
+    sessions.set(sess.sessionId, sess);
+    saveSessions();
+    return json(res, 200, { ok: true, status: "cancelled" });
+  }
+
   const mFb = req.url.match(/^\/session\/([A-Z0-9]+)\/feedback$/);
   if (req.method === "POST" && mFb) {
     const sess = sessions.get(mFb[1]);
@@ -706,6 +758,10 @@ ${s}
       updatedAt: sess.updatedAt || null,
       quote: sess.quote ? { label: sess.quote.label, total: sess.quote.total } : null,
       site: sess.site || "",
+      mandate: sess.mandate || null,
+      payment: sess.payment || null,
+      technician: sess.technician || null,
+      policy: sess.policy || null,
       report: sess.report || null,
       tasks: sess.tasks || [],
       events: sess.events || [],
