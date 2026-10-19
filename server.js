@@ -119,8 +119,11 @@ const reports = new Map();
 
 const hits = new Map();
 
+const LOCAL_ORIGIN = /^http:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/;
+
 function cors(res, origin) {
-  const ok = ALLOWED.includes(origin) || ALLOWED.includes("*");
+  const ok = ALLOWED.includes(origin) || ALLOWED.includes("*") || LOCAL_ORIGIN.test(origin);
+  if (!origin) return;
   res.setHeader("Access-Control-Allow-Origin", ok ? origin : ALLOWED[0]);
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
