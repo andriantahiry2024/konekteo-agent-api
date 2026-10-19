@@ -97,22 +97,59 @@ function json(res, code, body) {
   res.end(JSON.stringify(body));
 }
 
-async function askDeepSeek(history) {
+function parseLoose(text) {
+  const raw = String(text || "").trim();
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw);
+  } catch {}
+  const fenced = raw.replace(/```json/gi, "```").split("```").filter(Boolean);
+  for (const part of fenced) {
+    try {
+      return JSON.parse(part.trim());
+    } catch {}
+  }
+  const start = raw.indexOf("{");
+  const end = raw.lastIndexOf("}");
+  if (start >= 0 && end > start) {
+    try {
+      return JSON.parse(raw.slice(start, end + 1));
+    } catch {}
+  }
+  return null;
+}
+
+async function callModel(history) {
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` },
     body: JSON.stringify({
       model: MODEL,
-      temperature: 0.4,
-      max_tokens: 400,
+      temperature: 0.3,
+      max_tokens: 800,
       response_format: { type: "json_object" },
       messages: [{ role: "system", content: SYSTEM }, ...history],
     }),
   });
   if (!res.ok) throw new Error(`deepseek ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const data = await res.json();
-  const text = data?.choices?.[0]?.message?.content || "";
-  return JSON.parse(text);
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+async function askDeepSeek(history) {
+  // Le modèle renvoie parfois un JSON vide ou tronqué : on retente une fois.
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const text = await callModel(history);
+    const parsed = parseLoose(text);
+    if (parsed && typeof parsed.reply === "string" && parsed.reply.trim()) return parsed;
+    console.error("réponse modèle illisible (essai", attempt + 1, "):", String(text).slice(0, 200));
+  }
+  // Dernier recours : une réponse utile, jamais un message qui casse la conversation.
+  return {
+    reply: "Je n'ai pas bien saisi. Reformulez en une phrase ce que vous voulez régler, et je continue.",
+    stage: "ask",
+    category: null,
+  };
 }
 
 const server = http.createServer(async (req, res) => {
