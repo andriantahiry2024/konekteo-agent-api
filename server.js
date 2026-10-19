@@ -149,6 +149,45 @@ const server = http.createServer(async (req, res) => {
     return;
   }
 
+  const mStatus = req.url.match(/^\/session\/([A-Z0-9]+)\/status$/);
+  if (req.method === "POST" && mStatus) {
+    const token = req.headers["x-admin-token"] || "";
+    if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
+    const sess = sessions.get(mStatus[1]);
+    if (!sess) return json(res, 404, { error: "session inconnue" });
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const p = JSON.parse(body || "{}");
+        sess.status = String(p.status || sess.status).slice(0, 40);
+        sess.note = String(p.note || "").slice(0, 300);
+        sess.updatedAt = new Date().toISOString();
+        if (p.capture) sess.capture = String(p.capture).slice(0, 300);
+        sessions.set(sess.sessionId, sess);
+        console.log("STATUT", sess.sessionId, sess.status);
+        return json(res, 200, { ok: true });
+      } catch (e) {
+        return json(res, 400, { error: "payload invalide" });
+      }
+    });
+    return;
+  }
+
+  const mOne = req.url.match(/^\/session\/([A-Z0-9]+)$/);
+  if (req.method === "GET" && mOne) {
+    const sess = sessions.get(mOne[1]);
+    if (!sess) return json(res, 404, { error: "session inconnue" });
+    return json(res, 200, {
+      sessionId: sess.sessionId,
+      status: sess.status,
+      note: sess.note || "",
+      receivedAt: sess.receivedAt,
+      updatedAt: sess.updatedAt || null,
+      quote: sess.quote ? { label: sess.quote.label, total: sess.quote.total } : null,
+    });
+  }
+
   if (req.method === "GET" && req.url.startsWith("/sessions")) {
     const token = req.headers["x-admin-token"] || new URL(req.url, "http://x").searchParams.get("token") || "";
     if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
