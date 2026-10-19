@@ -559,7 +559,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v10-persistant" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v11-securite" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -974,8 +974,9 @@ ${s}
     });
   }
 
-  if (req.method === "GET" && req.url.startsWith("/sessions")) {
-    const token = req.headers["x-admin-token"] || new URL(req.url, "http://x").searchParams.get("token") || "";
+  const chemin = req.url.split("?")[0];
+  if (req.method === "GET" && chemin === "/sessions") {
+    const token = req.headers["x-admin-token"] || "";
     if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
     const liste = [...sessions.values()].reverse().map((sess) => ({
       ...sess,
@@ -992,7 +993,10 @@ ${s}
   if (now - bucket.t > 60_000) { bucket.t = now; bucket.n = 0; }
   bucket.n += 1;
   hits.set(ip, bucket);
-  if (bucket.n > 20) return json(res, 429, { error: "trop de requêtes, réessayez dans une minute" });
+  if (bucket.n > 20) {
+    res.setHeader("Retry-After", "60");
+    return json(res, 429, { error: "trop de requêtes, réessayez dans une minute" });
+  }
 
   let body = "";
   req.on("data", (c) => {
@@ -1002,7 +1006,25 @@ ${s}
   req.on("end", async () => {
     try {
       const payload = JSON.parse(body || "{}");
-      const ctxText = contexteSysteme(payload.context);
+      const ctx = Object.assign({}, payload.context || {});
+      if (ctx.sessionId && sessions.has(ctx.sessionId)) {
+        const vrai = sessions.get(ctx.sessionId);
+        ctx.quote = vrai.quote || null;
+        ctx.payment = vrai.payment || null;
+        ctx.mandate = vrai.mandate || null;
+        ctx.technician = vrai.technician || null;
+        ctx.policy = vrai.policy || null;
+        ctx.site = vrai.site || "";
+        ctx.tasks = vrai.tasks || null;
+        ctx.events = vrai.events || null;
+        ctx.report = vrai.report || null;
+        ctx.status = vrai.status;
+      } else if (!ctx.sessionId) {
+        // avant toute session, aucun paiement ne peut exister
+        ctx.payment = null;
+        ctx.mandate = null;
+      }
+      const ctxText = contexteSysteme(ctx);
       const history = Array.isArray(payload.history) ? payload.history.slice(-12) : [];
       const clean = history
         .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
@@ -1010,10 +1032,8 @@ ${s}
       if (!clean.length) return json(res, 400, { error: "historique vide" });
 
       const lastUser = [...clean].reverse().find((m) => m.role === "user");
-      const direct = lastUser
-        ? reponsePMDirecte(lastUser.content, payload.context, payload.context && payload.context.history ? payload.context.history : clean)
-        : null;
-      let out = direct || (await askDeepSeek(clean, ctxText, payload.context));
+      const direct = lastUser ? reponsePMDirecte(lastUser.content, ctx, clean) : null;
+      let out = direct || (await askDeepSeek(clean, ctxText, ctx));
       let suggestions = Array.isArray(out.suggestions)
         ? out.suggestions.filter((x) => typeof x === "string" && x.trim().length > 2 && x.length < 60).slice(0, 3)
         : [];
@@ -1021,9 +1041,9 @@ ${s}
         const cat = PRICING[out.category] ? out.category : inferCategory(clean);
         suggestions = SUGGESTIONS_REPLI[cat] || SUGGESTIONS_REPLI.fallback;
       }
-      const addon = lastUser ? detecterAvenant(lastUser.content, payload.context && payload.context.quote) : null;
+      const addon = lastUser ? detecterAvenant(lastUser.content, ctx.quote) : null;
       if (addon && out) out = { ...out, addon };
-      const dejaDevis = Boolean(payload.context && payload.context.quote);
+      const dejaDevis = Boolean(ctx.quote);
       const stage = out.stage === "quote" && !dejaDevis ? "quote" : "ask";
       const category = PRICING[out.category] ? out.category : "fallback";
 
@@ -1041,6 +1061,7 @@ ${s}
       }
       return json(res, 200, { reply: nettoyerReply(out.reply || "").slice(0, 500), stage, addon: out.addon || null, suggestions });
     } catch (e) {
+      if (e instanceof SyntaxError) return json(res, 400, { error: "requête invalide" });
       console.error("chat error:", e.message);
       return json(res, 502, { error: "l'agent est momentanément indisponible" });
     }
