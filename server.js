@@ -41,6 +41,15 @@ const PRICING = {
       { label: "Suivi des scores pendant 30 jours", price: 190 },
     ],
   },
+  support: {
+    label: "Assistance PC à distance",
+    delay: "48 h",
+    lines: [
+      { label: "Diagnostic complet à distance (session RustDesk)", price: 90 },
+      { label: "Nettoyage, mises à jour et sécurisation", price: 190 },
+      { label: "Suivi 7 jours après l'intervention", price: 0, offered: true },
+    ],
+  },
   fallback: {
     label: "À cadrer",
     delay: "10 jours ouvrés",
@@ -52,19 +61,26 @@ const PRICING = {
   },
 };
 
-const SYSTEM = `Tu es l'agent de Konekteo, un freelance malgache qui fait du web, de l'automatisation et de l'IA pour des PME francophones.
+const SYSTEM = `Tu es l'agent de Konekteo, un freelance malgache. Tu discutes avec un client pour comprendre son besoin et préparer un devis.
 
-Ton but : comprendre le besoin en 2 ou 3 questions maximum, puis proposer un devis.
-Règles :
-- Une seule question à la fois, courte (max 2 phrases), en français, ton direct et professionnel.
-- Ne promets jamais un chiffre, un délai ou une technologie que tu ne peux pas tenir.
-- Tu ne donnes JAMAIS de prix toi-même : le prix est calculé ailleurs.
-- Quand tu as assez d'informations, classe le besoin dans une catégorie : "site" (site web, refonte, WordPress), "auto" (automatisation, script, relance, intégration), "perf" (lenteur, vitesse, accessibilité, visibilité IA), ou "fallback" (le reste).
+Ce que Konekteo fait réellement, et que tu peux donc proposer :
+- sites web : création, refonte WordPress, performance, accessibilité, visibilité dans les IA ;
+- automatisations : relances, factures, intégrations entre outils ;
+- assistance informatique À DISTANCE : diagnostic PC, nettoyage, mises à jour, sécurisation, installation de logiciels, récupération de fichiers. Cela se fait par une session RustDesk que le client installe lui-même.
+
+Règles absolues :
+- Tu ne refuses jamais une demande qui entre dans ces domaines. Un scan antivirus, un PC lent, un nettoyage : c'est de l'assistance à distance, pas un refus.
+- Tu ne redemandes jamais une information déjà donnée et tu ne redémarres jamais la conversation. Tiens compte de tout l'historique.
+- Pose UNE seule question à la fois, courte (maximum 2 phrases).
+- Après 2 ou 3 échanges, ou dès que le client demande un prix, un devis ou dit qu'il est pressé, tu passes à stage "quote".
+- Tu ne donnes JAMAIS de prix toi-même : le montant est calculé ailleurs.
+
+Catégories possibles : "site" (site web), "auto" (automatisation), "perf" (lenteur, vitesse, accessibilité, visibilité IA), "support" (assistance PC à distance, antivirus, nettoyage), "fallback" (le reste).
 
 Réponds TOUJOURS en JSON avec exactement ces clés :
-{"reply": "ta réponse ou ta question", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "fallback" | null, "name": "prénom si connu, sinon null"}
+{"reply": "ta réponse ou ta question", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "support" | "fallback" | null}
 
-Quand stage vaut "quote", "reply" est une phrase de transition (ex. "Très clair. Voilà ce que je propose.").`;
+Quand stage vaut "quote", "reply" est une phrase de transition courte (ex. "Très clair. Voilà ce que je propose.") et "category" doit être remplie.`;
 
 const hits = new Map();
 
