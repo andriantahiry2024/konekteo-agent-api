@@ -161,7 +161,7 @@ function parseLoose(text) {
   return null;
 }
 
-async function callModelText(history) {
+async function callModelText(history, ctxText = "") {
   const res = await fetch(API, {
     method: "POST",
     headers: { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` },
@@ -169,7 +169,7 @@ async function callModelText(history) {
       model: MODEL,
       temperature: 0.2,
       max_tokens: 700,
-      messages: [{ role: "system", content: SYSTEM_TEXT }, ...history],
+      messages: [{ role: "system", content: SYSTEM_TEXT + (ctxText ? "\n\n" + ctxText : "") }, ...history],
     }),
   });
   if (!res.ok) throw new Error(`deepseek ${res.status}: ${(await res.text()).slice(0, 200)}`);
@@ -192,7 +192,31 @@ function parseTextReply(text) {
   return { reply, stage, category };
 }
 
-async function callModel(history, jsonMode = true) {
+function contexteSysteme(ctx) {
+  if (!ctx || typeof ctx !== "object") return "";
+  const parts = [];
+  if (ctx.step) parts.push(`Étape du parcours : ${ctx.step}`);
+  if (ctx.sessionId) parts.push(`Dossier : ${ctx.sessionId}`);
+  if (ctx.status) parts.push(`Statut de la session : ${ctx.status}`);
+  if (ctx.quote) {
+    const lignes = (ctx.quote.lines || []).map((l) => `${l.label} (${l.price === 0 ? "offert" : l.price + " €"})`).join(" ; ");
+    parts.push(`Devis accepté : ${ctx.quote.label}, total ${ctx.quote.total} € — lignes : ${lignes}`);
+  }
+  if (Array.isArray(ctx.tasks) && ctx.tasks.length) {
+    parts.push("Tâches : " + ctx.tasks.map((t) => `${t.label} [${t.status}]`).join(" ; "));
+  }
+  if (Array.isArray(ctx.events) && ctx.events.length) {
+    parts.push("Dernières actions : " + ctx.events.slice(-6).map((e) => e.label).join(" | "));
+  }
+  if (ctx.report) {
+    const c = (ctx.report.findings || []).filter((f) => !f.ok).map((f) => `${f.label} = ${f.value}`).join(" ; ");
+    parts.push(`Rapport d'audit : score ${ctx.report.scores ? ctx.report.scores.total : "?"} /100. Points faibles : ${c || "aucun"}`);
+  }
+  if (!parts.length) return "";
+  return "ÉTAT RÉEL DU DOSSIER (source de vérité, ne l'invente pas) : " + parts.join(". ") + ".";
+}
+
+async function callModel(history, jsonMode = true, ctxText = "") {
   const body = {
     model: MODEL,
     temperature: 0.2,
@@ -254,11 +278,11 @@ function deterministicReply(history) {
   return { reply: QUESTIONS[category], stage: "ask", category };
 }
 
-async function askDeepSeek(history) {
+async function askDeepSeek(history, ctxText = "") {
   const plans = [true, true, "text", "text"];
   for (let i = 0; i < plans.length; i++) {
     try {
-      const text = plans[i] === "text" ? await callModelText(history) : await callModel(history, plans[i]);
+      const text = plans[i] === "text" ? await callModelText(history, ctxText) : await callModel(history, plans[i], ctxText);
       const parsed = plans[i] === "text" ? parseTextReply(text) : parseLoose(text);
       if (parsed && typeof parsed.reply === "string" && parsed.reply.trim()) return parsed;
       console.error(
@@ -575,13 +599,14 @@ ${s}
   req.on("end", async () => {
     try {
       const payload = JSON.parse(body || "{}");
+      const ctxText = contexteSysteme(payload.context);
       const history = Array.isArray(payload.history) ? payload.history.slice(-12) : [];
       const clean = history
         .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
         .map((m) => ({ role: m.role, content: m.content.slice(0, 1200) }));
       if (!clean.length) return json(res, 400, { error: "historique vide" });
 
-      const out = await askDeepSeek(clean);
+      const out = await askDeepSeek(clean, ctxText);
       const stage = out.stage === "quote" ? "quote" : "ask";
       const category = PRICING[out.category] ? out.category : "fallback";
 
