@@ -175,7 +175,8 @@ const ADDONS = [
   { re: /r[eé]daction|contenu|[aà]-propos|page contact/i, label: "Rédaction de contenus", price: 180 },
   { re: /logo|identit[eé] visuelle|chartre/i, label: "Identité visuelle", price: 290 },
   { re: /r[eé]servation|r[eé]server|prendre (des )?rendez-vous|agenda/i, label: "Module de réservation en ligne", price: 390 },
-  { re: /e-?commerce|boutique en ligne|vendre en ligne|paiement en ligne|panier/i, label: "Boutique en ligne avec paiement", price: 590 },
+  { re: /e-?commerce|boutique en ligne|vendre en ligne|paiement en ligne|panier|page boutique/i, label: "Boutique en ligne avec paiement", price: 590 },
+  { re: /r[eé]dig|r[eé]daction|textes? (de|des) (la|ma) page|contenu r[eé]dig/i, label: "Rédaction des textes", price: 180 },
 ];
 
 function detecterAvenant(message, quote) {
@@ -446,7 +447,7 @@ function reponsePMDirecte(message, ctx, history) {
         category: null,
       };
     }
-    const actif = ["connected", "connecting"].includes(c.statut);
+    const actif = ["connected", "connecting"].includes(c.status);
     return {
       reply: `Paiement enregistré : ${pay.amount} € le ${pay.date}${pay.demo ? " (démonstration : aucun débit réel)" : ""}. Condition d'arrêt : ${refund}.${actif ? " Dites-moi « arrêtez » : je transmets la coupure au technicien, qui coupe l'accès." : " Aucune session n'est en cours, donc il n'y a pas d'accès à couper."}`,
       stage: "ask",
@@ -456,7 +457,7 @@ function reponsePMDirecte(message, ctx, history) {
   if (/pay[eé]|reste quoi|reste à payer|reste a payer|reçu|recu/.test(m) && !/combien/.test(m)) {
     return {
       reply: pay
-        ? `Le dossier indique : ${pay.paid ? `${pay.amount} € payés le ${pay.date}` : "paiement non confirmé"}${pay.demo ? " — mode démonstration, aucun débit réel" : ""}. Reste à payer : ${pay.due || 0} €.${pay.receipt ? " Reçu : " + pay.receipt : " Le reçu vous sera envoyé par Nomena."}`
+        ? `Le dossier indique : ${pay.paid ? `${pay.amount} € payés le ${pay.date}` : "paiement non confirmé"}${pay.demo ? " — mode démonstration, aucun débit réel" : ""}. Reste à payer : ${pay.due || 0} €.${pay.receipt ? " Reçu : " + pay.receipt : " Pour le reçu, Nomena vous le transmet sur demande."}`
         : "Je n'ai pas le détail du paiement dans le dossier ; je le fais confirmer par Nomena sous 2 h ouvrées.",
       stage: "ask",
       category: null,
@@ -480,6 +481,17 @@ function reponsePMDirecte(message, ctx, history) {
       stage: "ask",
       category: null,
     };
+  }
+
+  if (/d[eé]lai|combien de temps|quand (est-ce que )?(ce sera|c'est) pr[eê]t|date de livraison/.test(m)) {
+    if (c.quote && c.quote.delay) {
+      return {
+        reply: `Le devis ${c.quoteAccepted ? "accepté" : "proposé"} prévoit : ${c.quote.delay}. Ce délai court à partir du moment où j'ai tout ce qu'il faut (accès ou contenus).`,
+        stage: "ask",
+        category: null,
+      };
+    }
+    return null;
   }
 
   // 5. périmètre : la demande n'est pas dans le devis → avenant
@@ -523,8 +535,9 @@ function reponsePMDirecte(message, ctx, history) {
 
   // 8. prix du devis (en dernier : « combien » est ambigu)
   if (/combien|prix|tarif|devis|co[uû]t/.test(m) && c.quote) {
+    const qualif = c.quoteAccepted ? "accepté" : "proposé";
     return {
-      reply: `Le devis accepté est de ${c.quote.total} € (${c.quote.label}), ligne par ligne dans votre dossier. Vous voulez que je détaille les lignes ou que j'explique une ligne précise ?`,
+      reply: `Le devis ${qualif} est de ${c.quote.total} € (${c.quote.label}), ligne par ligne dans votre dossier. Vous voulez que je détaille les lignes ou que j'explique une ligne précise ?`,
       stage: "ask",
       category: null,
     };
@@ -559,7 +572,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v12-contexte" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v13-personas" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -1065,7 +1078,11 @@ ${s}
         : [];
       if (!suggestions.length) {
         const cat = PRICING[out.category] ? out.category : inferCategory(clean);
-        suggestions = SUGGESTIONS_REPLI[cat] || SUGGESTIONS_REPLI.fallback;
+        const dernier = lastUser ? lastUser.content.toLowerCase() : "";
+        const fache = /con|nul|putain|merde|abruti|idiot|arnaque|voleur/.test(dernier);
+        suggestions = fache
+          ? ["Parler à un humain", "Arrêter et être remboursé", "Expliquez-moi ce qui se passe"]
+          : SUGGESTIONS_REPLI[cat] || SUGGESTIONS_REPLI.fallback;
       }
       const addon = lastUser ? detecterAvenant(lastUser.content, ctx.quote) : null;
       if (addon && out) out = { ...out, addon };
