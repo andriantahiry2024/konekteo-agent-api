@@ -115,6 +115,8 @@ REPLY: ta réponse au client, une à trois phrases
 STAGE: ask ou quote
 CATEGORY: site, auto, perf, support ou fallback (fallback si tu ne sais pas)`;
 
+const reports = new Map();
+
 const hits = new Map();
 
 function cors(res, origin) {
@@ -123,6 +125,10 @@ function cors(res, origin) {
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function escapeHtml(v) {
+  return String(v == null ? "" : v).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
 function json(res, code, body) {
@@ -301,9 +307,11 @@ const server = http.createServer(async (req, res) => {
             lang: String(req.headers["accept-language"] || "").slice(0, 80),
           },
           quote: p.quote || null,
+          site: record.site,
           rustdesk: { id, password: pwd },
           status: "pending",
         };
+        record.site = String(p.site || "").slice(0, 300);
         record.events = [
           {
             at: record.receivedAt,
@@ -327,6 +335,73 @@ const server = http.createServer(async (req, res) => {
       }
     });
     return;
+  }
+
+  // --- rapport d'audit produit par l'agent ---
+  if (req.method === "POST" && req.url === "/report") {
+    const token = req.headers["x-admin-token"] || "";
+    if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const p = JSON.parse(body || "{}");
+        const id = String(p.sessionId || "").toUpperCase().slice(0, 30) || "R" + Date.now().toString(36).toUpperCase();
+        reports.set(id, { ...p, receivedAt: new Date().toISOString() });
+        const sess = sessions.get(id);
+        if (sess) {
+          sess.report = { url: p.url, metrics: p.metrics, scores: p.scores || null, findings: p.findings || [] };
+          sess.events = sess.events || [];
+          sess.events.push({
+            at: new Date().toISOString(),
+            type: "report",
+            label: `Rapport d'audit généré (${(p.findings || []).length} constats)`,
+            status: "done",
+          });
+          sessions.set(id, sess);
+          saveSessions();
+        }
+        return json(res, 200, { ok: true, reportUrl: `/report/${id}` });
+      } catch (e) {
+        return json(res, 400, { error: "payload invalide" });
+      }
+    });
+    return;
+  }
+
+  const mReport = req.url.match(/^\/report\/([A-Z0-9]+)$/);
+  if (req.method === "GET" && mReport) {
+    const r = reports.get(mReport[1]);
+    if (!r) return json(res, 404, { error: "rapport inconnu" });
+    const f = (r.findings || [])
+      .map((x) => `<li class="${x.ok ? "ok" : "ko"}"><b>${escapeHtml(x.label)}</b><span>${escapeHtml(x.value)}</span></li>`)
+      .join("");
+    const s = r.scores
+      ? `<p class="scores">Score global : <b>${r.scores.total}</b> / 100 — performance ${r.scores.perf}, accessibilité ${r.scores.a11y}, données structurées ${r.scores.data}</p>`
+      : "";
+    const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rapport Konekteo — ${escapeHtml(r.url || "")}</title>
+<style>
+:root{color-scheme:dark}
+body{margin:0;background:#0b0b0c;color:#f1efea;font:15px/1.55 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;padding:40px 20px}
+main{max-width:820px;margin:0 auto}
+h1{font-size:26px;margin:0 0 6px;letter-spacing:-.02em}
+.sub{color:#8d8880;margin:0 0 28px;font-size:13px}
+.scores{background:#151514;border:1px solid #ffffff17;border-radius:12px;padding:14px 16px;margin:0 0 20px}
+ul{list-style:none;padding:0;margin:0}
+li{display:flex;justify-content:space-between;gap:16px;padding:11px 14px;border:1px solid #ffffff12;border-radius:10px;margin-bottom:8px;background:#111110}
+li span{color:#c7c3bb;text-align:right}
+li.ok b{color:#a2b399}
+li.ko b{color:#e08a6f}
+footer{margin-top:26px;color:#8d8880;font-size:12px}
+</style></head><body><main>
+<h1>Rapport d'audit — ${escapeHtml(r.url || "")}</h1>
+<p class="sub">Produit par l'agent Konekteo · session ${escapeHtml(r.sessionId || "")} · ${new Date(r.receivedAt).toLocaleString("fr-FR")}</p>
+${s}
+<ul>${f}</ul>
+<footer>Mesures automatisées : temps de réponse, poids de page, balises, images sans texte alternatif, données structurées, llms.txt. Aide documentaire, pas un avis juridique.</footer>
+</main></body></html>`;
+    res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
+    return res.end(html);
   }
 
   const mEv = req.url.match(/^\/session\/([A-Z0-9]+)\/event$/);
@@ -428,6 +503,8 @@ const server = http.createServer(async (req, res) => {
       receivedAt: sess.receivedAt,
       updatedAt: sess.updatedAt || null,
       quote: sess.quote ? { label: sess.quote.label, total: sess.quote.total } : null,
+      site: sess.site || "",
+      report: sess.report || null,
       tasks: sess.tasks || [],
       events: sess.events || [],
       feedback: (sess.feedback || []).map((f) => ({ at: f.at, text: f.text, status: f.status })),
