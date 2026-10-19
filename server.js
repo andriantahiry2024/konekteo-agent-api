@@ -117,9 +117,15 @@ DEVIS
 - Ne refuse jamais de chiffrer sous prétexte qu'« aucun devis n'existe » : c'est justement ton rôle de le créer.
 - Si un devis existe déjà dans le dossier, tu ne le réémets jamais : stage "ask".
 
+SUGGESTIONS
+- Joins toujours "suggestions" : 2 à 3 réponses courtes (moins de 45 caractères) que CE client aurait envie de cliquer ensuite, dans ses mots, collées à SON problème et à ce que tu viens de dire.
+- Interdit : « Où on en est », « Combien ça coûte », « Parler à un humain », « En savoir plus » — ces formules génériques ne servent à rien.
+- Exemples : après « faire scanner mon PC » → « Mon PC est très lent », « J'ai peut-être un virus », « Combien pour un scan ? ».
+- Après une réponse sur un site lent → « Combien pour l'optimiser ? », « Vous mesurez quoi ? », « Mon site est sur WordPress ».
+
 RÉPONSE
 Réponds toujours en JSON strict :
-{"reply": "ta réponse", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "support" | "fallback" | null}
+{"reply": "ta réponse", "stage": "ask" | "quote", "category": "site" | "auto" | "perf" | "support" | "fallback" | null, "suggestions": ["...", "...", "..."]}
 Quand "stage" vaut "quote", "reply" est une phrase de transition courte et "category" doit être remplie. Si un devis existe déjà dans le dossier, "stage" reste "ask".`;
 
 const SYSTEM_TEXT = `${SYSTEM}
@@ -166,6 +172,14 @@ function detecterAvenant(message, quote) {
   }
   return null;
 }
+
+const SUGGESTIONS_REPLI = {
+  support: ["Mon PC est très lent", "J'ai peut-être un virus", "Combien pour un scan ?"],
+  site: ["Combien pour refaire mon site ?", "Mon site est sur WordPress", "Je ne peux plus modifier mes textes"],
+  perf: ["Combien pour l'optimiser ?", "Vous mesurez quoi exactement ?", "Mon site met 5 s à s'ouvrir"],
+  auto: ["Je relance mes devis à la main", "Combien de temps ça me fait gagner ?", "Ça marche avec Excel ?"],
+  fallback: ["Mon site est lent", "Je perds du temps sur des tâches répétitives", "Je ne suis pas visible sur les IA"],
+};
 
 const hits = new Map();
 
@@ -874,6 +888,13 @@ ${s}
       const lastUser = [...clean].reverse().find((m) => m.role === "user");
       const direct = lastUser ? reponsePMDirecte(lastUser.content, payload.context) : null;
       let out = direct || (await askDeepSeek(clean, ctxText, payload.context));
+      let suggestions = Array.isArray(out.suggestions)
+        ? out.suggestions.filter((x) => typeof x === "string" && x.trim().length > 2 && x.length < 60).slice(0, 3)
+        : [];
+      if (!suggestions.length) {
+        const cat = PRICING[out.category] ? out.category : inferCategory(clean);
+        suggestions = SUGGESTIONS_REPLI[cat] || SUGGESTIONS_REPLI.fallback;
+      }
       const addon = lastUser ? detecterAvenant(lastUser.content, payload.context && payload.context.quote) : null;
       if (addon && out) out = { ...out, addon };
       const stage = out.stage === "quote" ? "quote" : "ask";
@@ -888,9 +909,10 @@ ${s}
           stage,
           quote: { key: category, label: p.label, delay: p.delay, lines, total },
           addon: out.addon || null,
+          suggestions,
         });
       }
-      return json(res, 200, { reply: String(out.reply || "").slice(0, 500), stage, addon: out.addon || null });
+      return json(res, 200, { reply: String(out.reply || "").slice(0, 500), stage, addon: out.addon || null, suggestions });
     } catch (e) {
       console.error("chat error:", e.message);
       return json(res, 502, { error: "l'agent est momentanément indisponible" });
