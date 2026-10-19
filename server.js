@@ -216,6 +216,9 @@ function nettoyerReply(txt) {
     .replace(/^\s*(REPLY|R[EÉ]PONSE)\s*:\s*/i, "")
     .replace(/\n?\s*(SUGGESTIONS?|CATEGORY|STAGE|REPLY)\s*:\s*\[/gi, "")
     .replace(/\n?\s*(SUGGESTIONS?|CATEGORY|STAGE)\s*:.*$/gim, "")
+    .replace(/Le montant exact est calculé par le serveur[^.]*\./gi, "Le montant figure sur la carte du devis.")
+    .replace(/calcul[eé] par le serveur[^.]*\./gi, "")
+    .replace(/selon cette cat[eé]gorie[^.]*\./gi, "")
     .replace(/^\s*["'`]+|["'`]+\s*$/g, "")
     .trim();
 }
@@ -347,7 +350,7 @@ async function callModel(history, jsonMode = true, ctxText = "") {
    le client devant « je n'ai pas bien saisi » deux fois de suite. */
 const KEYWORDS = {
   support: /pc|ordinateur|windows|virus|antivirus|nettoyage|dépannage|depannage|rame|écran bleu|ecran bleu|disque|ssd|mémoire|memoire|mise à jour|mise a jour/i,
-  site: /site|wordpress|vitrine|refonte|maquette|landing|page web/i,
+  site: /site|wordpress|vitrine|refonte|maquette|landing|page web|r[eé]servation|rendez-vous|agenda|boutique|e-?commerce/i,
   auto: /automat|script|relance|facture|excel|crm|whatsapp|télégram|telegram|intégration|integration/i,
   perf: /lent|vitesse|performance|chargement|rapide|audit/i,
 };
@@ -441,7 +444,13 @@ function reponsePMDirecte(message, ctx, history) {
   if (/rembours|j'arr[eê]te|j arrete|je veux arr[eê]ter|r[eé]cup[eè]re|annuler/.test(m) && /combien|montant|centime|somme/.test(m)) {
     return {
       reply: pay && pay.paid
-        ? `Je ne peux pas calculer un montant au centime : votre dossier indique ${pol ? pol.refund : "une condition à confirmer"}. Aucune intervention n'a encore été constatée dans le journal, donc la condition « non commencée » s'applique si rien n'a été fait. Nomena confirme le montant exact sous 2 h ouvrées.`
+        ? (() => {
+            const faites = (c.tasks || []).filter((t) => t.status === "done");
+            const etat = faites.length
+              ? `${faites.length} tâche(s) déjà réalisée(s) (${faites.map((t) => t.label).slice(0, 2).join(", ")}) : la condition « intervention non commencée » ne s'applique donc plus telle quelle.`
+              : "Aucune tâche n'est encore marquée faite dans le journal.";
+            return `Je ne peux pas calculer un montant au centime : votre dossier indique ${pol ? pol.refund : "une condition à confirmer"}. ${etat} Nomena confirme le montant exact sous 2 h ouvrées.`;
+          })()
         : "Aucun paiement n'est enregistré dans votre dossier : il n'y a rien à rembourser, aucune somme n'a été prélevée.",
       stage: "ask",
       category: null,
@@ -605,7 +614,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v14-session-verite" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v15-final" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -1112,12 +1121,12 @@ ${s}
       if (!suggestions.length) {
         const cat = PRICING[out.category] ? out.category : inferCategory(clean);
         const dernier = lastUser ? lastUser.content.toLowerCase() : "";
-        const fache = /con|nul|putain|merde|abruti|idiot|arnaque|voleur/.test(dernier);
+        const fache = /(^|[\s.,!?])(con|nul|nulle|putain|merde|abruti|idiote?|arnaque|voleurs?)([\s.,!?]|$)/.test(dernier);
         suggestions = fache
           ? ["Parler à un humain", "Arrêter et être remboursé", "Expliquez-moi ce qui se passe"]
           : SUGGESTIONS_REPLI[cat] || SUGGESTIONS_REPLI.fallback;
       }
-      const addon = lastUser ? detecterAvenant(lastUser.content, ctx.quote) : null;
+      const addon = lastUser && ctx.quote ? detecterAvenant(lastUser.content, ctx.quote) : null;
       if (addon && out) out = { ...out, addon };
       const dejaDevis = Boolean(ctx.quote);
       const stage = out.stage === "quote" && !dejaDevis ? "quote" : "ask";
