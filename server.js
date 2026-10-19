@@ -361,7 +361,7 @@ function deterministicReply(history) {
 
 /* Réponses déterministes pour les questions les plus fréquentes du client :
    on ne laisse pas le modèle inventer un état ou un chiffre. */
-function reponsePMDirecte(message, ctx) {
+function reponsePMDirecte(message, ctx, history) {
   const m = String(message || "").toLowerCase();
   const c = ctx || {};
   const etape = c.step || "1/4 — Compréhension";
@@ -370,6 +370,29 @@ function reponsePMDirecte(message, ctx) {
   const faites = taches.filter((t) => t.status === "done");
   const pay = c.payment || null;
   const pol = c.policy || null;
+
+  // 0. demande de prix sans devis existant : on chiffre, sans question de plus
+  if (!c.quote && /prix|devis|combien|tarif|co[uû]t|budget/.test(m)) {
+    const cat = inferCategory(history || []);
+    if (cat !== "fallback") {
+      const p = PRICING[cat];
+      const total = (p.lines || []).reduce((sum, l) => sum + (l.price || 0), 0);
+      return {
+        reply: `Voilà un devis pour ${p.label.toLowerCase()} : ${total} € ${p.delay ? `(délai ${p.delay})` : ""}. Les lignes sont dans votre dossier, je peux en expliquer une si besoin.`,
+        stage: "quote",
+        category: cat,
+      };
+    }
+    if (history && history.length >= 4) {
+      const p = PRICING.support;
+      const total = (p.lines || []).reduce((sum, l) => sum + (l.price || 0), 0);
+      return {
+        reply: `Faute de précision sur le site, je pars sur une assistance à distance : ${total} €. Dites-moi si c'est autre chose.`,
+        stage: "quote",
+        category: "support",
+      };
+    }
+  }
 
   // 1. identité : qui parle, qui agit
   if (/ia ou un humain|qui me parle|qui va toucher|robot|une ia|c'est qui/.test(m)) {
@@ -403,7 +426,7 @@ function reponsePMDirecte(message, ctx) {
   }
 
   // 3. données, mot de passe, captures
-  if (/mot de passe|dossiers|copie|conserv|capture|mes fichiers|donn[eé]es/.test(m)) {
+  if (/mot de passe|(vous|tu)\s+(copiez|gardez|conservez|voyez|lisez)|confidentialit|rgpd|donn[eé]es personnelles|mes dossiers (clients|personnels)|captures? d.écran/.test(m)) {
     const ret = c.mandate ? c.mandate.retention : "30 jours";
     return {
       reply: `Le mot de passe RustDesk sert uniquement à ouvrir la session : il est temporaire, expire après usage, et je ne l'affiche ni ne le répète. Le mandat encadre l'accès (périmètre, durée). Des captures d'écran sont conservées ${ret} comme preuve du travail, puis supprimées sur demande. Vos dossiers personnels ne sont pas consultés.`,
@@ -886,7 +909,9 @@ ${s}
       if (!clean.length) return json(res, 400, { error: "historique vide" });
 
       const lastUser = [...clean].reverse().find((m) => m.role === "user");
-      const direct = lastUser ? reponsePMDirecte(lastUser.content, payload.context) : null;
+      const direct = lastUser
+        ? reponsePMDirecte(lastUser.content, payload.context, payload.context && payload.context.history ? payload.context.history : clean)
+        : null;
       let out = direct || (await askDeepSeek(clean, ctxText, payload.context));
       let suggestions = Array.isArray(out.suggestions)
         ? out.suggestions.filter((x) => typeof x === "string" && x.trim().length > 2 && x.length < 60).slice(0, 3)
