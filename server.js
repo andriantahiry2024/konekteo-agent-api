@@ -312,7 +312,6 @@ const server = http.createServer(async (req, res) => {
             lang: String(req.headers["accept-language"] || "").slice(0, 80),
           },
           quote: p.quote || null,
-          site: record.site,
           rustdesk: simulated ? { id: "SIMULATION", password: "" } : { id, password: pwd },
           simulated,
           status: "pending",
