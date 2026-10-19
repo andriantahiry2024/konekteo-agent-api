@@ -160,6 +160,8 @@ const ADDONS = [
   { re: /refonte (de )?(la )?page d.accueil/i, label: "Refonte de la page d'accueil", price: 350 },
   { re: /r[eé]daction|contenu|[aà]-propos|page contact/i, label: "Rédaction de contenus", price: 180 },
   { re: /logo|identit[eé] visuelle|chartre/i, label: "Identité visuelle", price: 290 },
+  { re: /r[eé]servation|r[eé]server|prendre (des )?rendez-vous|agenda/i, label: "Module de réservation en ligne", price: 390 },
+  { re: /e-?commerce|boutique en ligne|vendre en ligne|paiement en ligne|panier/i, label: "Boutique en ligne avec paiement", price: 590 },
 ];
 
 function detecterAvenant(message, quote) {
@@ -192,6 +194,15 @@ function cors(res, origin) {
   res.setHeader("Vary", "Origin");
   res.setHeader("Access-Control-Allow-Methods", "POST, OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+}
+
+function nettoyerReply(txt) {
+  return String(txt || "")
+    .replace(/^\s*(REPLY|R[EÉ]PONSE)\s*:\s*/i, "")
+    .replace(/\n?\s*(SUGGESTIONS?|CATEGORY|STAGE|REPLY)\s*:\s*\[/gi, "")
+    .replace(/\n?\s*(SUGGESTIONS?|CATEGORY|STAGE)\s*:.*$/gim, "")
+    .replace(/^\s*["'`]+|["'`]+\s*$/g, "")
+    .trim();
 }
 
 function escapeHtml(v) {
@@ -264,7 +275,9 @@ function contexteSysteme(ctx) {
   if (ctx.status) parts.push(`Statut de la session : ${ctx.status}`);
   if (ctx.quote) {
     const lignes = (ctx.quote.lines || []).map((l) => `${l.label} (${l.price === 0 ? "offert" : l.price + " €"})`).join(" ; ");
-    parts.push(`Devis accepté : ${ctx.quote.label}, total ${ctx.quote.total} € — lignes : ${lignes}`);
+    parts.push(
+      `Devis accepté : ${ctx.quote.label}, total ${ctx.quote.total} €${ctx.quote.delay ? `, délai ${ctx.quote.delay}` : ""} — lignes : ${lignes}`
+    );
   }
   if (Array.isArray(ctx.tasks) && ctx.tasks.length) {
     parts.push("Tâches : " + ctx.tasks.map((t) => `${t.label} [${t.status}]`).join(" ; "));
@@ -378,7 +391,7 @@ function reponsePMDirecte(message, ctx, history) {
       const p = PRICING[cat];
       const total = (p.lines || []).reduce((sum, l) => sum + (l.price || 0), 0);
       return {
-        reply: `Voilà un devis pour ${p.label.toLowerCase()} : ${total} € ${p.delay ? `(délai ${p.delay})` : ""}. Les lignes sont dans votre dossier, je peux en expliquer une si besoin.`,
+        reply: `Voilà une base de devis pour ${p.label.toLowerCase()} : ${total} € ${p.delay ? `(délai ${p.delay})` : ""}. Elle couvre les lignes affichées ; ce qui n'y figure pas (réservation, boutique, rédaction…) sera chiffré en avenant avant toute action.`,
         stage: "quote",
         category: cat,
       };
@@ -409,8 +422,16 @@ function reponsePMDirecte(message, ctx, history) {
   // 2. argent déjà payé / remboursement / arrêt
   if (/rembours|j'arr[eê]te|j arrete|je veux arr[eê]ter|r[eé]cup[eè]re|annuler/.test(m)) {
     const refund = pol ? pol.refund : "condition à confirmer par Nomena sous 2 h ouvrées";
+    if (!pay || !pay.paid) {
+      return {
+        reply: `Je n'ai aucun paiement enregistré dans votre dossier : il n'y a donc rien à rembourser à ce stade, et aucune somme n'a été prélevée. Condition d'arrêt : ${refund}. Voulez-vous que je transmette la demande à Nomena ?`,
+        stage: "ask",
+        category: null,
+      };
+    }
+    const actif = ["connected", "connecting"].includes(c.statut);
     return {
-      reply: `Vous avez payé ${pay ? pay.amount + " €" : "le montant du devis"}${pay && pay.demo ? " (démonstration : aucun débit réel)" : ""}. Condition d'arrêt : ${refund}. Si vous arrêtez maintenant, l'accès à votre poste est coupé immédiatement — dites-moi « arrêtez » et je déclenche la coupure.`,
+      reply: `Paiement enregistré : ${pay.amount} € le ${pay.date}${pay.demo ? " (démonstration : aucun débit réel)" : ""}. Condition d'arrêt : ${refund}.${actif ? " Dites-moi « arrêtez » : je transmets la coupure au technicien, qui coupe l'accès." : " Aucune session n'est en cours, donc il n'y a pas d'accès à couper."}`,
       stage: "ask",
       category: null,
     };
@@ -521,7 +542,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v8-pricing" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v9-fixes" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -922,7 +943,8 @@ ${s}
       }
       const addon = lastUser ? detecterAvenant(lastUser.content, payload.context && payload.context.quote) : null;
       if (addon && out) out = { ...out, addon };
-      const stage = out.stage === "quote" ? "quote" : "ask";
+      const dejaDevis = Boolean(payload.context && payload.context.quote);
+      const stage = out.stage === "quote" && !dejaDevis ? "quote" : "ask";
       const category = PRICING[out.category] ? out.category : "fallback";
 
       if (stage === "quote") {
@@ -930,14 +952,14 @@ ${s}
         const lines = p.lines;
         const total = lines.reduce((s, l) => s + l.price, 0);
         return json(res, 200, {
-          reply: String(out.reply || "Voilà ce que je propose.").slice(0, 500),
+          reply: nettoyerReply(out.reply || "Voilà ce que je propose.").slice(0, 500),
           stage,
           quote: { key: category, label: p.label, delay: p.delay, lines, total },
           addon: out.addon || null,
           suggestions,
         });
       }
-      return json(res, 200, { reply: String(out.reply || "").slice(0, 500), stage, addon: out.addon || null, suggestions });
+      return json(res, 200, { reply: nettoyerReply(out.reply || "").slice(0, 500), stage, addon: out.addon || null, suggestions });
     } catch (e) {
       console.error("chat error:", e.message);
       return json(res, 502, { error: "l'agent est momentanément indisponible" });
