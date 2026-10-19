@@ -313,10 +313,73 @@ function reponsePMDirecte(message, ctx) {
   const statut = c.status || null;
   const taches = Array.isArray(c.tasks) ? c.tasks : [];
   const faites = taches.filter((t) => t.status === "done");
+  const pay = c.payment || null;
+  const pol = c.policy || null;
 
-  if (/o[uù]\s*(on\s*)?en est|statut|avancement|[cç]a avance|o[uù] on en est/.test(m)) {
+  // 1. identité : qui parle, qui agit
+  if (/ia ou un humain|qui me parle|qui va toucher|robot|une ia|c'est qui/.test(m)) {
+    const tech = c.technician
+      ? `${c.technician.name}, joignable à ${c.technician.contact} (réponse ${c.technician.eta})`
+      : "Nomena, technicien humain (contact@konekteo.com, réponse sous 2 h ouvrées)";
+    return {
+      reply: `Je suis l'assistant IA de Konekteo : je vous explique et je suis le dossier. L'intervention sur votre poste est faite par ${tech}. Voulez-vous que je vous mette en relation maintenant ?`,
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  // 2. argent déjà payé / remboursement / arrêt
+  if (/rembours|j'arr[eê]te|j arrete|je veux arr[eê]ter|r[eé]cup[eè]re|annuler/.test(m)) {
+    const refund = pol ? pol.refund : "condition à confirmer par Nomena sous 2 h ouvrées";
+    return {
+      reply: `Vous avez payé ${pay ? pay.amount + " €" : "le montant du devis"}${pay && pay.demo ? " (démonstration : aucun débit réel)" : ""}. Condition d'arrêt : ${refund}. Si vous arrêtez maintenant, l'accès à votre poste est coupé immédiatement — dites-moi « arrêtez » et je déclenche la coupure.`,
+      stage: "ask",
+      category: null,
+    };
+  }
+  if (/pay[eé]|reste quoi|reste à payer|reste a payer|reçu|recu/.test(m) && !/combien/.test(m)) {
+    return {
+      reply: pay
+        ? `Le dossier indique : ${pay.paid ? `${pay.amount} € payés le ${pay.date}` : "paiement non confirmé"}${pay.demo ? " — mode démonstration, aucun débit réel" : ""}. Reste à payer : ${pay.due || 0} €.${pay.receipt ? " Reçu : " + pay.receipt : " Le reçu vous sera envoyé par Nomena."}`
+        : "Je n'ai pas le détail du paiement dans le dossier ; je le fais confirmer par Nomena sous 2 h ouvrées.",
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  // 3. données, mot de passe, captures
+  if (/mot de passe|dossiers|copie|conserv|capture|mes fichiers|donn[eé]es/.test(m)) {
+    const ret = c.mandate ? c.mandate.retention : "30 jours";
+    return {
+      reply: `Le mot de passe RustDesk sert uniquement à ouvrir la session : il est temporaire, expire après usage, et je ne l'affiche ni ne le répète. Le mandat encadre l'accès (périmètre, durée). Des captures d'écran sont conservées ${ret} comme preuve du travail, puis supprimées sur demande. Vos dossiers personnels ne sont pas consultés.`,
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  // 4. garanties : on ne promet pas de résultat non mesuré
+  if (/garanti|garantissez|plus rapide de combien|appara[iî]trai|chatgpt|r[eé]sultat/.test(m)) {
+    return {
+      reply: `Je ne peux pas garantir un résultat : le devis porte sur des travaux mesurés, pas sur un classement ou une citation dans ChatGPT. Ce que je peux montrer, c'est l'état actuel (${c.report && c.report.scores ? "score " + c.report.scores.total + "/100" : "mesures du rapport"}) et l'écart après optimisation. Voulez-vous que je détaille les points mesurés ?`,
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  // 5. périmètre : la demande n'est pas dans le devis → avenant
+  if (/pas dans le devis|hors devis|ajouter|en plus|changer mes textes|refonte|ca change combien|ça change combien/.test(m)) {
+    const total = c.quote ? c.quote.total : null;
+    return {
+      reply: `Non : cette demande n'est pas couverte par le devis actuel${total ? ` de ${total} €` : ""}. Je prépare un avenant écrit : ancien total, ligne ajoutée, écart, nouveau total et impact sur le délai — Nomena vous le confirme sous 2 h ouvrées. Aucune action ne démarre avant votre accord explicite.`,
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  // 6. état du dossier
+  if (/o[uù]\s*(on\s*)?en est|statut|avancement|[cç]a avance/.test(m)) {
     let txt = `On est à l'étape ${etape}.`;
-    if (statut === "connected") txt += " La connexion à votre poste est active, je travaille dessus.";
+    if (statut === "connected") txt += " La connexion à votre poste est active, le technicien travaille.";
     else if (statut === "connecting") txt += " La connexion à votre poste est en cours.";
     else if (statut === "closed") txt += " L'intervention est terminée.";
     else if (statut === "failed" || statut === "error") txt += " La connexion a échoué, on peut réessayer ensemble.";
@@ -330,6 +393,7 @@ function reponsePMDirecte(message, ctx) {
     return { reply: txt, stage: "ask", category: null };
   }
 
+  // 7. rapport et score
   if (/score|rapport|llms|json-?ld|alt|audit/.test(m) && c.report) {
     const r = c.report;
     const score = r.scores ? r.scores.total : null;
@@ -337,13 +401,14 @@ function reponsePMDirecte(message, ctx) {
     let txt = score != null ? `Le score de votre site est ${score} sur 100.` : "Le rapport est disponible.";
     if (faibles.length) txt += ` Points à corriger : ${faibles.slice(0, 3).join(", ")}.`;
     else txt += " Aucun point bloquant détecté sur les critères mesurés.";
-    txt += " Je peux vous détailler chaque point en langage simple, ou lancer les corrections.";
+    txt += " Je peux vous détailler chaque point en langage simple.";
     return { reply: txt, stage: "ask", category: null };
   }
 
+  // 8. prix du devis (en dernier : « combien » est ambigu)
   if (/combien|prix|tarif|devis|co[uû]t/.test(m) && c.quote) {
     return {
-      reply: `Le devis accepté est de ${c.quote.total} € (${c.quote.label}), tout compris, sans surprise. Vous voulez que je détaille les lignes ?`,
+      reply: `Le devis accepté est de ${c.quote.total} € (${c.quote.label}), ligne par ligne dans votre dossier. Vous voulez que je détaille les lignes ou que j'explique une ligne précise ?`,
       stage: "ask",
       category: null,
     };
