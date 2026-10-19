@@ -150,7 +150,7 @@ function saveReports() {
 loadReports();
 
 const ADDONS = [
-  { re: /modifier (mes|les) textes|[eé]diter|[eé]dition des textes|mettre [aà] jour (mes|les) textes/i, label: "Édition et mise à jour des textes", price: 240 },
+  { re: /(modifier|changer|corriger|mettre [aà] jour|editer|[eé]diter)\s+(mes|les|le|la)?\s*(textes?|contenus?|pages?)/i, label: "Édition et mise à jour des textes", price: 240 },
   { re: /refonte (de )?(la )?page d.accueil/i, label: "Refonte de la page d'accueil", price: 350 },
   { re: /r[eé]daction|contenu|[aà]-propos|page contact/i, label: "Rédaction de contenus", price: 180 },
   { re: /logo|identit[eé] visuelle|chartre/i, label: "Identité visuelle", price: 290 },
