@@ -438,6 +438,39 @@ function reponsePMDirecte(message, ctx, history) {
   }
 
   // 2. argent déjà payé / remboursement / arrêt
+  if (/rembours|j'arr[eê]te|j arrete|je veux arr[eê]ter|r[eé]cup[eè]re|annuler/.test(m) && /combien|montant|centime|somme/.test(m)) {
+    return {
+      reply: pay && pay.paid
+        ? `Je ne peux pas calculer un montant au centime : votre dossier indique ${pol ? pol.refund : "une condition à confirmer"}. Aucune intervention n'a encore été constatée dans le journal, donc la condition « non commencée » s'applique si rien n'a été fait. Nomena confirme le montant exact sous 2 h ouvrées.`
+        : "Aucun paiement n'est enregistré dans votre dossier : il n'y a rien à rembourser, aucune somme n'a été prélevée.",
+      stage: "ask",
+      category: null,
+    };
+  }
+
+  if (/arr[eê]tez|arr[eê]ter|coupez|stoppez|stop la session|stop tout|j'arr[eê]te/.test(m)) {
+    const st = c.status || null;
+    if (st === "connected" || st === "connecting") {
+      return {
+        reply: `La session est active (statut : ${st}). Le bouton « Arrêter maintenant » coupe l'accès immédiatement ; je transmets aussi l'arrêt au technicien pour confirmation.`,
+        stage: "ask",
+        category: null,
+      };
+    }
+    if (st === "cancelled" || st === "closed") {
+      return {
+        reply: `La session est déjà terminée (statut : ${st}). Plus aucun accès n'est ouvert sur votre poste.`,
+        stage: "ask",
+        category: null,
+      };
+    }
+    return {
+      reply: `Aucune connexion n'est active pour le moment (statut du dossier : ${st || "en attente"}). Il n'y a donc rien à couper à cet instant. Si vous voulez tout arrêter, dites-le : je bloque le dossier et je transmets à Nomena.`,
+      stage: "ask",
+      category: null,
+    };
+  }
+
   if (/rembours|j'arr[eê]te|j arrete|je veux arr[eê]ter|r[eé]cup[eè]re|annuler/.test(m)) {
     const refund = pol ? pol.refund : "condition à confirmer par Nomena sous 2 h ouvrées";
     if (!pay || !pay.paid) {
@@ -572,7 +605,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v13-personas" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v14-session-verite" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
