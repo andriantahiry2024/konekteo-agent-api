@@ -130,6 +130,42 @@ STAGE: ask ou quote
 CATEGORY: site, auto, perf, support ou fallback (fallback si tu ne sais pas)`;
 
 const reports = new Map();
+const REPORTS_FILE = "/tmp/reports.json";
+
+function loadReports() {
+  try {
+    const raw = fs.readFileSync(REPORTS_FILE, "utf8");
+    for (const r of JSON.parse(raw)) reports.set(r.sessionId, r);
+    console.log(`rapports restaurés: ${reports.size}`);
+  } catch {}
+}
+
+function saveReports() {
+  try {
+    fs.writeFileSync(REPORTS_FILE, JSON.stringify([...reports.values()].slice(-40)));
+  } catch (e) {
+    console.error("rapports:", e.message);
+  }
+}
+loadReports();
+
+const ADDONS = [
+  { re: /modifier (mes|les) textes|[eé]diter|[eé]dition des textes|mettre [aà] jour (mes|les) textes/i, label: "Édition et mise à jour des textes", price: 240 },
+  { re: /refonte (de )?(la )?page d.accueil/i, label: "Refonte de la page d'accueil", price: 350 },
+  { re: /r[eé]daction|contenu|[aà]-propos|page contact/i, label: "Rédaction de contenus", price: 180 },
+  { re: /logo|identit[eé] visuelle|chartre/i, label: "Identité visuelle", price: 290 },
+];
+
+function detecterAvenant(message, quote) {
+  const m = String(message || "");
+  for (const a of ADDONS) {
+    if (!a.re.test(m)) continue;
+    const dejaLa = quote && (quote.lines || []).some((l) => l.label === a.label);
+    if (dejaLa) continue;
+    return { label: a.label, price: a.price };
+  }
+  return null;
+}
 
 const hits = new Map();
 
@@ -552,6 +588,7 @@ const server = http.createServer(async (req, res) => {
         const p = JSON.parse(body || "{}");
         const id = String(p.sessionId || "").toUpperCase().slice(0, 30) || "R" + Date.now().toString(36).toUpperCase();
         reports.set(id, { ...p, receivedAt: new Date().toISOString() });
+        saveReports();
         const sess = sessions.get(id);
         if (sess) {
           sess.report = { url: p.url, metrics: p.metrics, scores: p.scores || null, findings: p.findings || [] };
@@ -634,6 +671,7 @@ footer{margin-top:26px;color:#8d8880;font-size:12px}
 <p class="sub">Produit par l'agent Konekteo · session ${escapeHtml(r.sessionId || "")} · ${new Date(r.receivedAt).toLocaleString("fr-FR")}</p>
 ${s}
 <ul>${f}</ul>
+<p class="sub">Score = performance 40 % + accessibilité 30 % + données structurées 30 %. La présence de llms.txt est contrôlée mais n'entre pas dans ce score.</p>
 <footer>Mesures automatisées : temps de réponse, poids de page, balises, images sans texte alternatif, données structurées, llms.txt. Aide documentaire, pas un avis juridique.</footer>
 </main></body></html>`;
     res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
@@ -694,6 +732,39 @@ ${s}
     sessions.set(sess.sessionId, sess);
     saveSessions();
     return json(res, 200, { ok: true, status: "cancelled" });
+  }
+
+  const mAdd = req.url.match(/^\/session\/([A-Z0-9]+)\/addendum$/);
+  if (req.method === "POST" && mAdd) {
+    const sess = sessions.get(mAdd[1]);
+    if (!sess) return json(res, 404, { error: "session inconnue" });
+    let body = "";
+    req.on("data", (c) => (body += c));
+    req.on("end", () => {
+      try {
+        const p = JSON.parse(body || "{}");
+        const label = String(p.label || "").slice(0, 120);
+        const price = Math.max(0, Math.min(5000, Number(p.price) || 0));
+        if (!label || !price) return json(res, 400, { error: "avenant invalide" });
+        sess.quote = sess.quote || { label: "", total: 0, lines: [] };
+        sess.quote.lines = [...(sess.quote.lines || []), { label, price }];
+        sess.quote.total = sess.quote.lines.reduce((sum, l) => sum + (l.price || 0), 0);
+        sess.quote.updatedAt = new Date().toISOString();
+        sess.events = sess.events || [];
+        sess.events.push({
+          at: new Date().toISOString(),
+          type: "addendum",
+          label: `Avenant accepté : ${label} (+${price} €) — nouveau total ${sess.quote.total} €`,
+          status: "done",
+        });
+        sessions.set(sess.sessionId, sess);
+        saveSessions();
+        return json(res, 200, { ok: true, total: sess.quote.total });
+      } catch (e) {
+        return json(res, 400, { error: "payload invalide" });
+      }
+    });
+    return;
   }
 
   const mFb = req.url.match(/^\/session\/([A-Z0-9]+)\/feedback$/);
@@ -802,7 +873,9 @@ ${s}
 
       const lastUser = [...clean].reverse().find((m) => m.role === "user");
       const direct = lastUser ? reponsePMDirecte(lastUser.content, payload.context) : null;
-      const out = direct || (await askDeepSeek(clean, ctxText, payload.context));
+      let out = direct || (await askDeepSeek(clean, ctxText, payload.context));
+      const addon = lastUser ? detecterAvenant(lastUser.content, payload.context && payload.context.quote) : null;
+      if (addon && out) out = { ...out, addon };
       const stage = out.stage === "quote" ? "quote" : "ask";
       const category = PRICING[out.category] ? out.category : "fallback";
 
