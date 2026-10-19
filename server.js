@@ -521,7 +521,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v7-addons" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v8-pricing" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
