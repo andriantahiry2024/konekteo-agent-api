@@ -88,6 +88,13 @@ Réponds TOUJOURS en JSON avec exactement ces clés :
 
 Quand stage vaut "quote", "reply" est une phrase de transition courte (ex. "Très clair. Voilà ce que je propose.") et "category" doit être remplie.`;
 
+const SYSTEM_TEXT = `${SYSTEM}
+
+IMPORTANT : réponds en TEXTE BRUT, jamais en JSON. Exactement trois lignes :
+REPLY: ta réponse au client, une à trois phrases
+STAGE: ask ou quote
+CATEGORY: site, auto, perf, support ou fallback (fallback si tu ne sais pas)`;
+
 const hits = new Map();
 
 function cors(res, origin) {
@@ -123,6 +130,37 @@ function parseLoose(text) {
     } catch {}
   }
   return null;
+}
+
+async function callModelText(history) {
+  const res = await fetch(API, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${KEY}` },
+    body: JSON.stringify({
+      model: MODEL,
+      temperature: 0.2,
+      max_tokens: 700,
+      messages: [{ role: "system", content: SYSTEM_TEXT }, ...history],
+    }),
+  });
+  if (!res.ok) throw new Error(`deepseek ${res.status}: ${(await res.text()).slice(0, 200)}`);
+  const data = await res.json();
+  return data?.choices?.[0]?.message?.content || "";
+}
+
+function parseTextReply(text) {
+  const raw = String(text || "");
+  if (raw.trim().length < 10) return null;
+  const grab = (label) => {
+    const m = raw.match(new RegExp(label + "\\s*:\\s*(.+)", "i"));
+    return m ? m[1].trim() : "";
+  };
+  const reply = grab("REPLY") || raw.replace(/STAGE\s*:.*/gi, "").replace(/CATEGORY\s*:.*/gi, "").trim();
+  const stage = /quote/i.test(grab("STAGE")) ? "quote" : "ask";
+  const catRaw = grab("CATEGORY").toLowerCase();
+  const category = ["site", "auto", "perf", "support", "fallback"].find((c) => catRaw.includes(c)) || null;
+  if (!reply || reply.length < 5) return null;
+  return { reply, stage, category };
 }
 
 async function callModel(history, jsonMode = true) {
@@ -188,11 +226,11 @@ function deterministicReply(history) {
 }
 
 async function askDeepSeek(history) {
-  const plans = [true, true, false];
+  const plans = [true, true, "text", "text"];
   for (let i = 0; i < plans.length; i++) {
     try {
-      const text = await callModel(history, plans[i]);
-      const parsed = parseLoose(text);
+      const text = plans[i] === "text" ? await callModelText(history) : await callModel(history, plans[i]);
+      const parsed = plans[i] === "text" ? parseTextReply(text) : parseLoose(text);
       if (parsed && typeof parsed.reply === "string" && parsed.reply.trim()) return parsed;
       console.error(
         `réponse modèle illisible (essai ${i + 1}, json=${plans[i]}), longueur=${String(text || "").length}:`,
