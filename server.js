@@ -1,6 +1,7 @@
 // Agent Konekteo — API de conversation. La clé DeepSeek reste ici, côté serveur.
 import http from "node:http";
 import fs from "node:fs";
+import crypto from "node:crypto";
 
 const PORT = Number(process.env.PORT || 3000);
 const KEY = process.env.DEEPSEEK_API_KEY || "";
@@ -8,7 +9,20 @@ const API = process.env.DEEPSEEK_API || "https://api.deepseek.com/chat/completio
 const MODEL = process.env.DEEPSEEK_MODEL || "deepseek-chat";
 const ADMIN = process.env.SESSION_ADMIN_TOKEN || "";
 const sessions = new Map();
-const DATA_FILE = "/tmp/sessions.json";
+
+// Dossiers et rapports sur un volume persistant quand il existe (sinon /tmp).
+function choisirDossier() {
+  for (const d of ["/app/data", "/tmp"]) {
+    try {
+      fs.mkdirSync(d, { recursive: true });
+      fs.accessSync(d, fs.constants.W_OK);
+      return d;
+    } catch {}
+  }
+  return "/tmp";
+}
+const DATA_DIR = choisirDossier();
+const DATA_FILE = `${DATA_DIR}/sessions.json`;
 
 function loadSessions() {
   try {
@@ -136,7 +150,7 @@ STAGE: ask ou quote
 CATEGORY: site, auto, perf, support ou fallback (fallback si tu ne sais pas)`;
 
 const reports = new Map();
-const REPORTS_FILE = "/tmp/reports.json";
+const REPORTS_FILE = `${DATA_DIR}/reports.json`;
 
 function loadReports() {
   try {
@@ -385,7 +399,10 @@ function reponsePMDirecte(message, ctx, history) {
   const pol = c.policy || null;
 
   // 0. demande de prix sans devis existant : on chiffre, sans question de plus
-  if (!c.quote && /prix|devis|combien|tarif|co[uû]t|budget/.test(m)) {
+  const intentionPrix =
+    /\b(prix|tarif|combien|co[uû]t|budget|combien ça coûte|ça coûte)\b/.test(m) &&
+    !/relanc|suivre mes devis|mes devis en attente|relancer mes devis/.test(m);
+  if (!c.quote && intentionPrix) {
     const cat = inferCategory(history || []);
     if (cat !== "fallback") {
       const p = PRICING[cat];
@@ -396,7 +413,7 @@ function reponsePMDirecte(message, ctx, history) {
         category: cat,
       };
     }
-    if (history && history.length >= 4) {
+    if (history && history.filter((h) => h.role === "user").length >= 2) {
       const p = PRICING.support;
       const total = (p.lines || []).reduce((sum, l) => sum + (l.price || 0), 0);
       return {
@@ -542,7 +559,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v9-fixes" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v10-persistant" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -556,12 +573,12 @@ const server = http.createServer(async (req, res) => {
         const p = JSON.parse(body || "{}");
         const id = String(p.rustdesk?.id || "").replace(/\s/g, "");
         const pwd = String(p.rustdesk?.pwd || "");
-        const simulatedReq = p.simulated === true;
+        const simulatedReq = p.simulated === true || p.simulated === "true";
         if (!simulatedReq && (!/^\d{9,12}$/.test(id) || pwd.length < 4)) {
           return json(res, 400, { error: "identifiant ou mot de passe invalide" });
         }
-        const simulated = p.simulated === true;
-        const sid = "S" + Date.now().toString(36).toUpperCase();
+        const simulated = simulatedReq;
+        const sid = "S" + Date.now().toString(36).toUpperCase() + "-" + crypto.randomBytes(3).toString("hex").toUpperCase();
         const record = {
           sessionId: sid,
           receivedAt: new Date().toISOString(),
@@ -572,7 +589,22 @@ const server = http.createServer(async (req, res) => {
             userAgent: String(req.headers["user-agent"] || "").slice(0, 200),
             lang: String(req.headers["accept-language"] || "").slice(0, 80),
           },
-          quote: p.quote || null,
+          quote: (() => {
+            if (!p.quote || typeof p.quote !== "object") return null;
+            const lines = Array.isArray(p.quote.lines)
+              ? p.quote.lines
+                  .filter((l) => l && typeof l === "object")
+                  .map((l) => ({ label: String(l.label || "").slice(0, 160), price: Math.max(0, Number(l.price) || 0) }))
+                  .slice(0, 20)
+              : [];
+            return {
+              key: ["site", "auto", "perf", "support"].includes(p.quote.key) ? p.quote.key : "fallback",
+              label: String(p.quote.label || "").slice(0, 120),
+              delay: String(p.quote.delay || "").slice(0, 60),
+              lines,
+              total: lines.reduce((sum, l) => sum + l.price, 0),
+            };
+          })(),
           rustdesk: simulated ? { id: "SIMULATION", password: "" } : { id, password: pwd },
           simulated,
           status: "pending",
@@ -644,8 +676,39 @@ const server = http.createServer(async (req, res) => {
     req.on("end", () => {
       try {
         const p = JSON.parse(body || "{}");
-        const id = String(p.sessionId || "").toUpperCase().slice(0, 30) || "R" + Date.now().toString(36).toUpperCase();
-        reports.set(id, { ...p, receivedAt: new Date().toISOString() });
+        const id =
+          String(p.sessionId || "")
+            .toUpperCase()
+            .replace(/[^A-Z0-9-]/g, "")
+            .slice(0, 30) || "R" + Date.now().toString(36).toUpperCase();
+        const findings = Array.isArray(p.findings)
+          ? p.findings
+              .filter((f) => f && typeof f === "object")
+              .map((f) => ({
+                label: String(f.label || "").slice(0, 160),
+                value: String(f.value || "").slice(0, 160),
+                ok: f.ok === true,
+              }))
+              .slice(0, 40)
+          : [];
+        const scores =
+          p.scores && typeof p.scores === "object"
+            ? {
+                perf: Number(p.scores.perf) || 0,
+                a11y: Number(p.scores.a11y) || 0,
+                data: Number(p.scores.data) || 0,
+                total: Number(p.scores.total) || 0,
+              }
+            : null;
+        reports.set(id, {
+          ...p,
+          sessionId: id,
+          url: String(p.url || "").slice(0, 300),
+          findings,
+          scores,
+          metrics: p.metrics && typeof p.metrics === "object" ? p.metrics : {},
+          receivedAt: new Date().toISOString(),
+        });
         saveReports();
         const sess = sessions.get(id);
         if (sess) {
@@ -700,15 +763,24 @@ Start-Process notepad.exe $o
     return res.end(script);
   }
 
-  const mReport = req.url.match(/^\/report\/([A-Z0-9]+)$/);
+  const mReport = req.url.match(/^\/report\/([A-Z0-9-]+)$/);
   if (req.method === "GET" && mReport) {
-    const r = reports.get(mReport[1]);
+    let r = null;
+    try {
+      r = reports.get(mReport[1]);
+    } catch (e) {
+      r = null;
+    }
     if (!r) return json(res, 404, { error: "rapport inconnu" });
-    const f = (r.findings || [])
+    const findings = Array.isArray(r.findings) ? r.findings.filter((x) => x && typeof x === "object") : [];
+    const sc = r.scores && typeof r.scores === "object" ? r.scores : null;
+    const f = findings
       .map((x) => `<li class="${x.ok ? "ok" : "ko"}"><b>${escapeHtml(x.label)}</b><span>${escapeHtml(x.value)}</span></li>`)
       .join("");
-    const s = r.scores
-      ? `<p class="scores">Score global : <b>${r.scores.total}</b> / 100 — performance ${r.scores.perf}, accessibilité ${r.scores.a11y}, données structurées ${r.scores.data}</p>`
+    const s = sc
+      ? `<p class="scores">Score global : <b>${escapeHtml(Number(sc.total) || 0)}</b> / 100 — performance ${escapeHtml(
+          Number(sc.perf) || 0
+        )}, accessibilité ${escapeHtml(Number(sc.a11y) || 0)}, données structurées ${escapeHtml(Number(sc.data) || 0)}</p>`
       : "";
     const html = `<!doctype html><html lang="fr"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Rapport Konekteo — ${escapeHtml(r.url || "")}</title>
 <style>
@@ -736,7 +808,7 @@ ${s}
     return res.end(html);
   }
 
-  const mEv = req.url.match(/^\/session\/([A-Z0-9]+)\/event$/);
+  const mEv = req.url.match(/^\/session\/([A-Z0-9-]+)\/event$/);
   if (req.method === "POST" && mEv) {
     const token = req.headers["x-admin-token"] || "";
     if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
@@ -774,7 +846,7 @@ ${s}
     return;
   }
 
-  const mStop = req.url.match(/^\/session\/([A-Z0-9]+)\/stop$/);
+  const mStop = req.url.match(/^\/session\/([A-Z0-9-]+)\/stop$/);
   if (req.method === "POST" && mStop) {
     const sess = sessions.get(mStop[1]);
     if (!sess) return json(res, 404, { error: "session inconnue" });
@@ -792,7 +864,7 @@ ${s}
     return json(res, 200, { ok: true, status: "cancelled" });
   }
 
-  const mAdd = req.url.match(/^\/session\/([A-Z0-9]+)\/addendum$/);
+  const mAdd = req.url.match(/^\/session\/([A-Z0-9-]+)\/addendum$/);
   if (req.method === "POST" && mAdd) {
     const sess = sessions.get(mAdd[1]);
     if (!sess) return json(res, 404, { error: "session inconnue" });
@@ -825,7 +897,7 @@ ${s}
     return;
   }
 
-  const mFb = req.url.match(/^\/session\/([A-Z0-9]+)\/feedback$/);
+  const mFb = req.url.match(/^\/session\/([A-Z0-9-]+)\/feedback$/);
   if (req.method === "POST" && mFb) {
     const sess = sessions.get(mFb[1]);
     if (!sess) return json(res, 404, { error: "session inconnue" });
@@ -849,7 +921,7 @@ ${s}
     return;
   }
 
-  const mStatus = req.url.match(/^\/session\/([A-Z0-9]+)\/status$/);
+  const mStatus = req.url.match(/^\/session\/([A-Z0-9-]+)\/status$/);
   if (req.method === "POST" && mStatus) {
     const token = req.headers["x-admin-token"] || "";
     if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
@@ -860,7 +932,11 @@ ${s}
     req.on("end", () => {
       try {
         const p = JSON.parse(body || "{}");
-        sess.status = String(p.status || sess.status).slice(0, 40);
+        const nouveau = String(p.status || sess.status).slice(0, 40);
+        if (sess.status === "cancelled" && nouveau !== "cancelled") {
+          return json(res, 200, { ok: true, note: "session déjà arrêtée par le client" });
+        }
+        sess.status = nouveau;
         sess.note = String(p.note || "").slice(0, 300);
         sess.updatedAt = new Date().toISOString();
         if (p.capture) sess.capture = String(p.capture).slice(0, 300);
@@ -875,7 +951,7 @@ ${s}
     return;
   }
 
-  const mOne = req.url.match(/^\/session\/([A-Z0-9]+)$/);
+  const mOne = req.url.match(/^\/session\/([A-Z0-9-]+)$/);
   if (req.method === "GET" && mOne) {
     const sess = sessions.get(mOne[1]);
     if (!sess) return json(res, 404, { error: "session inconnue" });
@@ -901,7 +977,11 @@ ${s}
   if (req.method === "GET" && req.url.startsWith("/sessions")) {
     const token = req.headers["x-admin-token"] || new URL(req.url, "http://x").searchParams.get("token") || "";
     if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
-    return json(res, 200, { count: sessions.size, sessions: [...sessions.values()].reverse() });
+    const liste = [...sessions.values()].reverse().map((sess) => ({
+      ...sess,
+      rustdesk: sess.rustdesk ? { id: sess.rustdesk.id, password: "••••••" } : null,
+    }));
+    return json(res, 200, { count: liste.length, sessions: liste });
   }
 
   if (req.method !== "POST" || req.url !== "/chat") return json(res, 404, { error: "not found" });
