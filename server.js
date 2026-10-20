@@ -614,7 +614,7 @@ const server = http.createServer(async (req, res) => {
     return res.end();
   }
   if (req.method === "GET" && (req.url === "/" || req.url === "/health")) {
-    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v15-final" });
+    return json(res, 200, { ok: true, model: MODEL, key: Boolean(KEY), build: "v16-medias" });
   }
   // --- l'agent reçoit ici tout ce que le client transmet après le paiement ---
   if (req.method === "POST" && req.url === "/session") {
@@ -784,6 +784,50 @@ const server = http.createServer(async (req, res) => {
       }
     });
     return;
+  }
+
+  // --- hébergement public des vidéos pour les réseaux (Facebook télécharge l'URL) ---
+  if (req.method === "POST" && req.url === "/media") {
+    const token = req.headers["x-admin-token"] || "";
+    if (!ADMIN || token !== ADMIN) return json(res, 401, { error: "token requis" });
+    let body = "";
+    req.on("data", (c) => {
+      body += c;
+      if (body.length > 120_000_000) req.destroy();
+    });
+    req.on("end", () => {
+      try {
+        const p = JSON.parse(body || "{}");
+        const nom = String(p.name || "").replace(/[^A-Za-z0-9._-]/g, "").slice(0, 120);
+        if (!nom || !p.data) return json(res, 400, { error: "nom ou données manquants" });
+        const dossier = `${DATA_DIR}/media`;
+        fs.mkdirSync(dossier, { recursive: true });
+        fs.writeFileSync(`${dossier}/${nom}`, Buffer.from(p.data, "base64"));
+        return json(res, 200, { ok: true, url: `/media/${nom}`, bytes: fs.statSync(`${dossier}/${nom}`).size });
+      } catch (e) {
+        return json(res, 400, { error: "upload invalide" });
+      }
+    });
+    return;
+  }
+
+  const mMedia = req.url.match(/^\/media\/([A-Za-z0-9._-]+)$/);
+  if (req.method === "GET" && mMedia) {
+    const f = `${DATA_DIR}/media/${mMedia[1]}`;
+    try {
+      const buf = fs.readFileSync(f);
+      const ext = mMedia[1].split(".").pop().toLowerCase();
+      const type = ext === "mp4" ? "video/mp4" : ext === "jpg" || ext === "jpeg" ? "image/jpeg" : ext === "vtt" ? "text/vtt" : "application/octet-stream";
+      res.writeHead(200, {
+        "Content-Type": type,
+        "Content-Length": buf.length,
+        "Access-Control-Allow-Origin": "*",
+        "Cache-Control": "public, max-age=3600",
+      });
+      return res.end(buf);
+    } catch (e) {
+      return json(res, 404, { error: "média inconnu" });
+    }
   }
 
   if (req.method === "GET" && req.url === "/diag.ps1") {
